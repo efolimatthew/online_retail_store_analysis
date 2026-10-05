@@ -1,0 +1,369 @@
+---
+title: "Analyzing an online retail Data from Kaggle"
+format: html
+editor: visual
+---
+
+## Introduction
+
+The project was inspired by a post by [**Karina Samsonova**](https://www.linkedin.com/in/karina-samsonova/) on linkedin.
+
+The data is available on [Kaggle](https://www.kaggle.com/datasets/vijayuv/onlineretail)
+
+```{r}
+#| label: import libraries
+#| include: false
+library(data.table)
+library(tidyverse)
+
+```
+
+```{r import_data}
+df <- read.csv(unz("online_retail_data.zip", "OnlineRetail.csv"))
+colnames(df)
+dim(df)
+dt <- setDT(df)   # convert data.frame to data.table (by reference)
+dt[, sort(unique(Country))]
+dt[, .N, by = Country][order(-N)]
+```
+
+Filter out the country UK
+
+```{r}
+#| label: filtered UK only
+#| echo: false
+uk <- dt[Country == "United Kingdom"]
+uk[, .N]         # number of rows
+```
+
+## Phase 1: Quick Data Quality Check
+
+```{r}
+#| label: phase1
+#| include: false
+#| echo: false
+
+str(uk)
+uk[, .N]
+uk[, lapply(.SD, function(x) sum(is.na(x)))] #check for missing values in all columns
+typeof(uk$CustomerID)
+```
+
+Column: Invoice Number
+
+```{r}
+uk[, .(
+  missing = sum(is.na(InvoiceNo)),
+  unique  = uniqueN(InvoiceNo)
+)]
+
+uk[grepl("^C", InvoiceNo), .N]
+summary(uk)
+head(uk)
+uk[, InvoiceNo := as.factor(InvoiceNo)]
+nlevels(uk$InvoiceNo)
+
+```
+
+Unique invoices are about 25900.
+
+### Check for negative quantities (returns / cancellations)
+
+```{r}
+uk[, .(
+  total_rows = .N,
+  negative_qty_rows = sum(Quantity < 0),
+  negative_qty_percent = round(sum(Quantity < 0)/.N * 100, 2)
+)]
+
+```
+
+**Observation:**
+
+-   Negative `Quantity` indicates returns or cancelled orders.
+
+-   About 1.86 percent of the data was negative.
+
+### see the invoices
+
+```{r}
+uk[Quantity < 0, .(InvoiceNo, StockCode, Description, Quantity)]
+
+```
+
+### Check for missing CustomerID (guest checkouts)
+
+```{r}
+uk[, .(
+  missing_customer = sum(is.na(CustomerID)),
+  missing_customer_percent = round(sum(is.na(CustomerID))/.N * 100, 2)
+)]
+
+```
+
+About 26,96 percent of the customers id were missing
+
+### Convert to time the invoice date column
+
+```{r}
+#| Validate data
+#| echo: false
+uk[, InvoiceDate := as.POSIXct(InvoiceDate, format="%m/%d/%Y %H:%M")]
+```
+
+## Phase 2: Clean Your Data
+
+```{r}
+#| label: filtered UK only
+#| echo: false
+uk <- dt[Country == "United Kingdom"]
+uk[, .N]         # number of rows
+dt$InvoiceDate %>% head()
+uk[, Country := NULL]
+names(uk)   # should no longer show "Country"
+head(uk)
+
+```
+
+### Remove returns (InvoiceNo starting with "C")
+
+```{r}
+#| label:
+uk <- uk[!grepl("^C", as.character(InvoiceNo))]
+# Should be zero cancellations now
+uk[grepl("^C", InvoiceNo), .N]
+
+# Confirm UK only
+#uk[, .N, by = Country]
+
+```
+
+### Create `TotalSales` column
+
+```{r}
+#| label: Create a calculated field
+
+uk[, TotalSales := Quantity * UnitPrice]
+
+# Look at first few rows
+head(uk[, .(InvoiceNo, StockCode, Description, Quantity, UnitPrice, TotalSales)])
+
+# Summary of TotalSales
+summary(uk$TotalSales)
+
+uk[Quantity < 0, .N]
+
+
+```
+
+```{r}
+neg_qty <- uk[Quantity < 0]
+uk[Quantity < 0 & !grepl("^C", as.character(InvoiceNo))]
+
+
+```
+
+“Some negative quantities exist without a corresponding C\* invoice; likely corrections or returns not properly logged.
+
+```{r}
+uk[Quantity < 0, .(
+  total_negative = .N,
+  standard_returns = sum(grepl("^C", as.character(InvoiceNo))),
+  anomalies = sum(!grepl("^C", as.character(InvoiceNo)))
+)]
+
+```
+
+**Explanation:**
+
+-   `total_negative` → all rows with negative Quantity
+
+-   `standard_returns` → negative rows **with InvoiceNo starting with “C”**
+
+-   `anomalies` → negative rows *without C InvoiceNo*\*
+
+    standard returns is zero because the invoice number starting with C has been removed.
+
+```{r}
+uk <- uk[Quantity > 0]
+uk <- uk[!grepl("^C", as.character(InvoiceNo))]
+# Any negative Quantity left?
+uk[Quantity < 0, .N]      # should be 0
+
+# Any C* invoices left?
+uk[grepl("^C", as.character(InvoiceNo)), .N]  # should be 0
+
+# Quick row count
+uk[, .N]                  # should be ~40–50K
+
+```
+
+## Phase 3: Analysis
+
+### Analysis 1: Top 10 Bestselling Products
+
+```{r}
+#| label: Top 10 Bestselling Products
+#| echo: false
+top_products <- uk[, .(
+  total_quantity = sum(Quantity)
+), by = Description][order(-total_quantity)][1:10]
+
+top_products
+
+```
+
+```{r}
+top_products[, rank := 1:.N]
+top_products
+
+```
+
+This shows **the 10 products with the highest units sold** in the UK after cleaning.
+
+### Analysis 2: Top 10 Revenue Products
+
+```{r}
+#| label: Top 10 Revenue Products 
+#| 
+#| echo: false
+
+top_revenue <- uk[, .(
+  total_revenue = sum(TotalSales)
+), by = Description][order(-total_revenue)][1:10]
+
+top_revenue
+
+
+```
+
+```{r}
+top_revenue[, rank := 1:.N]
+top_revenue
+
+```
+
+### Analysis 3: Sales per hour
+
+```{r}
+#| label: Sales per Hour 
+#| 
+#| echo: false
+
+uk[, InvoiceDate := as.POSIXct(
+  InvoiceDate,
+  format = "%m/%d/%Y %H:%M",
+  tz = "UTC"
+)]
+
+str(uk$InvoiceDate)
+
+uk[, .(
+  start = min(InvoiceDate),
+  end   = max(InvoiceDate)
+)]
+
+uk[, hour := hour(InvoiceDate)]
+uk[, .N, by = hour][order(hour)]
+uk[, sum(TotalSales), by = hour][order(hour)]
+
+```
+
+### Analysis 4: Sales by Day of the Week
+
+```{r}
+uk[, weekday := weekdays(InvoiceDate)]
+uk[, weekday := factor(
+  weekday,
+  levels = c("Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday")
+)]
+weekday_summary <- uk[, .(
+  transactions = .N,
+  total_revenue = sum(TotalSales)
+), by = weekday][order(weekday)]
+
+weekday_summary
+
+```
+
+```{r}
+#| label: Sales by Day of Week 
+#| 
+#| echo: false
+```
+
+```{r}
+uk[, month := format(InvoiceDate, "%Y-%m")]
+monthly_summary <- uk[, .(
+  transactions = .N,
+  total_revenue = sum(TotalSales)
+), by = month][order(month)]
+
+monthly_summary
+uk[, month_name := factor(
+  format(InvoiceDate, "%B"),
+  levels = month.name
+)]
+
+uk[, .(
+  transactions = .N,
+  total_revenue = sum(TotalSales)
+), by = month_name][order(month_name)]
+
+```
+
+> *When do our bestselling products sell the most?*
+
+Identify top 10 bestselling products (by quantity)
+
+```{r}
+top10_products <- uk[, .(
+  total_quantity = sum(Quantity)
+), by = Description][order(-total_quantity)][1:10]
+
+top10_products
+
+```
+
+```{r}
+uk_top10 <- uk[Description %in% top10_products$Description]
+
+```
+
+Analyze time patterns for top products
+
+### By hour
+
+```{r}
+uk_top10[, .(
+  transactions = .N,
+  total_revenue = sum(TotalSales)
+), by = hour][order(hour)]
+
+```
+
+### By weekday
+
+```{r}
+uk_top10[, .(
+  transactions = .N,
+  total_revenue = sum(TotalSales)
+), by = weekday][order(weekday)]
+
+```
+
+perfect for product demand timing
+
+## Phase 4: Visualization
+
+```{r}
+
+```
+
+## Phase 5: Recommendation
+
+Insight: "Peak shopping hours are 12-2 pm, with 70% of daily sales occurring between 10 am-4 pm." Can it be based on weekdays?
+
+Recommendation: 
+
+"Schedule promotional emails to arrive between 10 am and 12 pm to catch the peak shopping window."

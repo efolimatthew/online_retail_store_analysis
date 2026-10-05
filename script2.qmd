@@ -1,0 +1,140 @@
+---
+title: "uk online retail analysis"
+format: html
+editor: visual
+---
+
+## Introduction
+
+The project was inspired by a post by [**Karina Samsonova**](https://www.linkedin.com/in/karina-samsonova/) on linkedin.
+
+The data is made available on [Kaggle](https://www.kaggle.com/datasets/vijayuv/onlineretail)
+
+```{r}
+#| label: import libraries
+#| include: false
+library(data.table)
+library(tidyverse)
+library(knitr)
+library(patchwork)
+```
+
+```{r import_data}
+df <- read.csv(unz("online_retail_data.zip", "OnlineRetail.csv"))
+colnames(df)
+dim(df)
+dt <- setDT(df)   # convert data.frame to data.table (by reference)
+dt[, sort(unique(Country))]
+dt[, .N, by = Country][order(-N)]
+```
+
+You can add options to executable code like this
+
+```{r}
+#| echo: false
+# Filter UK, remove returns/negatives
+uk <- dt[Country == "United Kingdom"]
+uk <- uk[Quantity > 0 & !grepl("^C", InvoiceNo)]
+uk[, InvoiceDate := as.POSIXct(InvoiceDate, format="%m/%d/%Y %H:%M", tz="UTC")]
+uk[, TotalSales := Quantity * UnitPrice]
+```
+
+## Hourly Timing — Invoice vs Product
+
+```{r}
+#| echo: false
+# Top 10 products
+# Product-level hourly counts
+product_time <- uk[, .(count = .N), by = .(hour = hour(InvoiceDate))]
+product_time[, level := "Product-level"]
+
+# Invoice-level hourly counts
+invoice_dt <- uk[, .(invoice_time = min(InvoiceDate), invoice_revenue = sum(TotalSales)), by = InvoiceNo]
+invoice_time <- invoice_dt[, .(count = .N), by = .(hour = hour(invoice_time))]
+invoice_time[, level := "Invoice-level"]
+
+timing_compare <- rbindlist(list(product_time, invoice_time))
+
+p1 <- ggplot(timing_compare, aes(x = hour, y = count, color = level)) +
+  geom_line(linewidth = 1.2) + geom_point(size = 2) +
+  scale_x_continuous(breaks = 0:23) +
+  labs(title = "Customer Purchase Timing — Hourly",
+       subtitle = "Invoice-level = customer decisions; Product-level = basket volume",
+       x = "Hour of Day", y = "Count") +
+  theme_minimal(base_size = 14) + theme(plot.title = element_text(face = "bold"), legend.position = "top")
+
+p1
+
+```
+
+```{r}
+product_dow <- uk[, .(count = .N), by = .(weekday = weekdays(InvoiceDate))]
+product_dow[, level := "Product-level"]
+invoice_dow <- invoice_dt[, .(count = .N), by = .(weekday = weekdays(invoice_time))]
+invoice_dow[, level := "Invoice-level"]
+dow_compare <- rbindlist(list(product_dow, invoice_dow))
+dow_compare[, weekday := factor(weekday, levels=c("Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"))]
+
+p2 <- ggplot(dow_compare, aes(x = weekday, y = count, fill = level)) +
+  geom_col(position = "dodge") +
+  labs(title = "Purchasing Patterns by Day of Week",
+       subtitle = "Invoice-level shows true customer decisions",
+       x = NULL, y = "Count") +
+  theme_minimal(base_size = 14) + theme(plot.title = element_text(face = "bold"), legend.position = "top")
+
+p2
+
+```
+
+```{r}
+
+product_dow <- uk[, .(count = .N), by = .(weekday = weekdays(InvoiceDate))]
+product_dow[, level := "Product-level"]
+invoice_dow <- invoice_dt[, .(count = .N), by = .(weekday = weekdays(invoice_time))]
+invoice_dow[, level := "Invoice-level"]
+dow_compare <- rbindlist(list(product_dow, invoice_dow))
+dow_compare[, weekday := factor(weekday, levels=c("Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"))]
+
+p2 <- ggplot(dow_compare, aes(x = weekday, y = count, fill = level)) +
+  geom_col(position = "dodge") +
+  labs(title = "Purchasing Patterns by Day of Week",
+       subtitle = "Invoice-level shows true customer decisions",
+       x = NULL, y = "Count") +
+  theme_minimal(base_size = 14) + theme(plot.title = element_text(face = "bold"), legend.position = "top")
+
+p2
+```
+
+```{r}
+top_products_rev <- uk[, .(total_revenue = sum(TotalSales)), by = Description][order(-total_revenue)][1:5]
+top_product_names <- top_products_rev$Description
+
+product_time_rev <- uk[Description %in% top_product_names,
+                       .(total_revenue = sum(TotalSales)),
+                       by = .(hour = hour(InvoiceDate), Description)]
+
+p3 <- ggplot(product_time_rev, aes(x = hour, y = total_revenue, color = Description)) +
+  geom_line(linewidth = 1.2) + geom_point(size = 2) +
+  facet_wrap(~ Description, scales = "free_y") +
+  labs(title = "Revenue-Weighted Hourly Patterns — Top 5 Products",
+       x = "Hour of Day", y = "Revenue (£)") +
+  theme_minimal(base_size = 14) + theme(plot.title = element_text(face = "bold"), legend.position = "none")
+
+p3
+
+```
+
+```{r}
+dashboard <- (p1 | p2) / (p3 | p4) +
+  plot_annotation(
+    title = "UK Online Retail Analysis — Customer & Product Timing",
+    subtitle = "Invoice-level vs Product-level, Revenue-weighted Top Products, and Basket Size Bias",
+    caption = "Data: Online Retail UK | Analysis: data.table + ggplot2",
+    theme = theme(plot.title = element_text(face="bold", size=16),
+                  plot.subtitle = element_text(size=12),
+                  plot.caption = element_text(size=10, face="italic"))
+  )
+
+dashboard
+
+```
